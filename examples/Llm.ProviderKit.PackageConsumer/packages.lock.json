@@ -4,9 +4,9 @@
     "net10.0": {
       "Llm.ProviderKit": {
         "type": "Direct",
-        "requested": "[0.1.0-preview.2, )",
-        "resolved": "0.1.0-preview.2",
-        "contentHash": "k9w7JJborMr8zfNvMp9cNRYkNLYI5ZIOT0AWVdVmDILMDrqsaPubWd8LBsUK81QxkBM7kCk39tlN3rMev5bpVQ=="
+        "requested": "[0.1.0-preview.3, )",
+        "resolved": "0.1.0-preview.3",
+        "contentHash": "kgywBonGvUndwVfdSLP23bDMsnEZDoCzVPKPZYIo6s+aOQQMwdcD6h9pxIUFJ7DT3YDnV+6ujNmJTlSvy68FZA=="
       }
     }
   }

@@ -3,7 +3,7 @@
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <PackageId>Llm.ProviderKit</PackageId>
-    <Version>0.1.0-preview.2</Version>
+    <Version>0.1.0-preview.3</Version>
     <Authors>Malenkiy Solovey</Authors>
     <Description>Provider catalog, safe model discovery and deterministic inventory primitives for LLM API providers.</Description>
     <PackageTags>llm;provider;models;discovery;openai-compatible</PackageTags>

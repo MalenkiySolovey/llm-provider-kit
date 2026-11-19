@@ -25,9 +25,16 @@ public static class JsonPointerExtractor
             {
                 if (!current.TryGetProperty(token, out var value))
                 {
-                    var found = current.EnumerateObject().FirstOrDefault(property => property.Name.Equals(token, StringComparison.OrdinalIgnoreCase));
-                    if (found.Name is null) return false;
-                    value = found.Value;
+                    var found = false;
+                    foreach (var property in current.EnumerateObject())
+                    {
+                        if (!property.Name.Equals(token, StringComparison.OrdinalIgnoreCase)) continue;
+                        value = property.Value;
+                        found = true;
+                        break;
+                    }
+
+                    if (!found) return false;
                 }
 
                 current = value;

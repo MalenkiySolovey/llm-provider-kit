@@ -115,6 +115,14 @@ public sealed class InspectionTests
         Assert.All(handler.AuthorizationValues, value => Assert.Equal("synthetic-token", value));
     }
 
+    [Fact]
+    public void JsonPointerMissingObjectPropertyReturnsFalseWithoutThrowing()
+    {
+        using var document = System.Text.Json.JsonDocument.Parse("{\"data\":[]}");
+
+        Assert.False(JsonPointerExtractor.TryResolvePointer(document.RootElement, "/balance/remaining", out _));
+    }
+
     private static ProviderDescriptor Provider() => new()
     {
         Id = "example",
