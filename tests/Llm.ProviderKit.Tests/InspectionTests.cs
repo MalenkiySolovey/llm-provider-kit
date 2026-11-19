@@ -95,6 +95,26 @@ public sealed class InspectionTests
         Assert.Equal("synthetic-token", handler.Authorization);
     }
 
+    [Fact]
+    public async Task UnknownProviderInspectionUsesOnlyInjectedDocumentedBillingStrategy()
+    {
+        var handler = new GenericBillingHandler();
+        using var client = new HttpClient(handler);
+        using var transport = new SafeProviderHttpTransport(client);
+        var credentials = new InMemoryProviderCredentialSource([("generic-unknown", "endpoint", "synthetic-token")]);
+        using var inspector = new ProviderInspectionService(new ProviderProbePlanner(), transport,
+            new ProviderProbeResponseMapper(), credentials, [new DocumentedUsageStrategy()]);
+
+        var result = await inspector.InspectUnknownAsync("endpoint", "https://custom-proxy.internal/v1");
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(["model-x"], result.ModelIds);
+        Assert.Equal(2m, result.Billing.Used);
+        Assert.Equal(CapabilityStatus.Supported, result.Capabilities["usage"]);
+        Assert.Equal(2, handler.RequestCount);
+        Assert.All(handler.AuthorizationValues, value => Assert.Equal("synthetic-token", value));
+    }
+
     private static ProviderDescriptor Provider() => new()
     {
         Id = "example",
@@ -131,6 +151,44 @@ public sealed class InspectionTests
             RequestCount++;
             Authorization = request.Headers.Authorization?.Parameter;
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"data\":[{\"id\":\"model:free\"},{\"id\":\"model\"}]}") });
+        }
+    }
+
+    private sealed class DocumentedUsageStrategy : IGenericProviderBillingStrategy
+    {
+        public string Id => "synthetic-usage";
+        public int Order => 10;
+        public ProviderCapabilityRecipe? CreateRecipe(Uri providerOrigin) =>
+            providerOrigin.Host.Equals("custom-proxy.internal", StringComparison.OrdinalIgnoreCase)
+                ? new ProviderCapabilityRecipe
+                {
+                    Status = CapabilityStatus.Supported,
+                    Strategy = "synthetic-read-only-usage",
+                    Requests = [new RecipeRequest { Id = "usage", Method = "GET", Path = "/usage", Auth = "bearer" }],
+                    Outputs = new RecipeResponseMapping
+                    {
+                        Used = new JsonFieldMapping { RequestId = "usage", JsonPath = "/total" },
+                    },
+                }
+                : null;
+    }
+
+    private sealed class GenericBillingHandler : HttpMessageHandler
+    {
+        public int RequestCount { get; private set; }
+        public List<string?> AuthorizationValues { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            AuthorizationValues.Add(request.Headers.Authorization?.Parameter);
+            var body = request.RequestUri?.AbsolutePath.EndsWith("/usage", StringComparison.Ordinal) == true
+                ? "{\"total\":2}"
+                : "{\"data\":[{\"id\":\"model-x\"}]}";
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json"),
+            });
         }
     }
 }

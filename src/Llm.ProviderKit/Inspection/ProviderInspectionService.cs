@@ -14,18 +14,27 @@ public sealed record ProviderInspectionResult(
 public sealed class ProviderInspectionService : IDisposable
 {
     private const int MaxRequestsPerRecipe = 8;
+    private const int MaxGenericBillingStrategies = 8;
     private readonly IProviderProbePlanner _planner;
     private readonly ISafeProviderHttpTransport _transport;
     private readonly ProviderProbeResponseMapper _mapper;
     private readonly IProviderCredentialSource? _credentials;
+    private readonly IReadOnlyList<IGenericProviderBillingStrategy> _genericBillingStrategies;
 
     public ProviderInspectionService(IProviderProbePlanner planner, ISafeProviderHttpTransport transport,
-        ProviderProbeResponseMapper mapper, IProviderCredentialSource? credentials = null)
+        ProviderProbeResponseMapper mapper, IProviderCredentialSource? credentials = null,
+        IEnumerable<IGenericProviderBillingStrategy>? genericBillingStrategies = null)
     {
         _planner = planner ?? throw new ArgumentNullException(nameof(planner));
         _transport = transport ?? throw new ArgumentNullException(nameof(transport));
         _mapper = mapper ?? throw new ArgumentNullException(nameof(mapper));
         _credentials = credentials;
+        _genericBillingStrategies = (genericBillingStrategies ?? [])
+            .Where(strategy => strategy is not null)
+            .OrderBy(strategy => strategy.Order)
+            .ThenBy(strategy => strategy.Id, StringComparer.Ordinal)
+            .Take(MaxGenericBillingStrategies)
+            .ToArray();
     }
 
     public ProviderInspectionService(IProviderCredentialSource? credentials = null)
@@ -174,6 +183,96 @@ public sealed class ProviderInspectionService : IDisposable
                 ["balance"] = CapabilityStatus.Unknown,
                 ["usage"] = CapabilityStatus.Unknown,
             }, new ProviderBillingFacts(), DateTimeOffset.UtcNow, mapped.Error);
+    }
+
+    /// <summary>Inspects an unknown OpenAI-compatible host without guessing billing paths.</summary>
+    public async Task<ProviderInspectionResult> InspectUnknownAsync(string endpointId, string rawBaseUrl,
+        string providerIdentity = "generic-unknown", CancellationToken cancellationToken = default)
+    {
+        var planned = _planner.PlanUnknownModels(rawBaseUrl);
+        if (planned.Plan is null || planned.SyntheticDescriptor is null)
+            return Failure(planned.Error ?? "Base URL was rejected.");
+
+        var descriptor = planned.SyntheticDescriptor;
+        var credential = _credentials is null ? null : await _credentials.GetAsync(
+            new ProviderCredentialRequest(providerIdentity, endpointId), cancellationToken).ConfigureAwait(false);
+        var responses = new Dictionary<string, ProbeHttpResponse>(StringComparer.Ordinal);
+        async Task<ProbeHttpResponse> SendOnceAsync(ProviderProbePlan plan)
+        {
+            var key = CacheKey(plan);
+            if (!responses.TryGetValue(key, out var response))
+            {
+                response = await _transport.SendAsync(plan, descriptor, credential, cancellationToken).ConfigureAwait(false);
+                responses[key] = response;
+            }
+
+            return response;
+        }
+
+        var modelResponse = await SendOnceAsync(planned.Plan).ConfigureAwait(false);
+        var mapped = _mapper.MapModels(modelResponse, planned.Plan.ModelsPointer);
+        var capabilities = new Dictionary<string, CapabilityStatus>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["models"] = mapped.Success ? CapabilityStatus.Supported : CapabilityStatus.Unknown,
+            ["balance"] = CapabilityStatus.Unknown,
+            ["usage"] = CapabilityStatus.Unknown,
+        };
+        decimal? balance = null;
+        decimal? used = null;
+        decimal? limit = null;
+        decimal? remaining = null;
+        string? currency = null;
+        string? billingError = null;
+        var origin = new Uri(planned.Plan.TargetUri.GetLeftPart(UriPartial.Authority));
+
+        foreach (var strategy in _genericBillingStrategies)
+        {
+            ProviderCapabilityRecipe? recipe;
+            try
+            {
+                recipe = strategy.CreateRecipe(origin);
+            }
+            catch (Exception)
+            {
+                billingError ??= "A generic billing strategy could not create its read-only recipe.";
+                continue;
+            }
+
+            if (recipe?.Status != CapabilityStatus.Supported) continue;
+            var outputMapping = recipe.Outputs ?? recipe.Response;
+            if (outputMapping?.Balance is not null) capabilities["balance"] = CapabilityStatus.Supported;
+            if (outputMapping?.Used is not null || outputMapping?.Limit is not null || outputMapping?.Remaining is not null)
+                capabilities["usage"] = CapabilityStatus.Supported;
+
+            var execution = await ExecuteRecipeAsync(descriptor, rawBaseUrl, recipe, "generic-billing", SendOnceAsync,
+                cancellationToken).ConfigureAwait(false);
+            if (execution.Valid)
+            {
+                var facts = _mapper.MapBilling(execution.Responses, outputMapping);
+                balance ??= facts.Balance;
+                used ??= facts.Used;
+                limit ??= facts.Limit;
+                remaining ??= facts.Remaining;
+                currency ??= facts.Currency;
+            }
+
+            if (balance.HasValue || used.HasValue || limit.HasValue || remaining.HasValue)
+            {
+                billingError = null;
+                break;
+            }
+
+            billingError ??= execution.Error;
+            if (execution.Error?.Contains("HTTP 401", StringComparison.OrdinalIgnoreCase) == true ||
+                execution.Error?.Contains("HTTP 403", StringComparison.OrdinalIgnoreCase) == true) break;
+        }
+
+        if (!string.IsNullOrWhiteSpace(currency) && remaining is null && limit.HasValue && used.HasValue)
+            remaining = Math.Max(0m, limit.Value - used.Value);
+        balance ??= remaining;
+        return new ProviderInspectionResult(mapped.Success, mapped.ModelIds ?? [], capabilities,
+            new ProviderBillingFacts(balance, used, limit, remaining, currency), DateTimeOffset.UtcNow,
+            billingError ?? mapped.Error ?? modelResponse.Error);
     }
 
     private async Task<RecipeExecution> ExecuteRecipeAsync(ProviderDescriptor descriptor, string baseUrl,
