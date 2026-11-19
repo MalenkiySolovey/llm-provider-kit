@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Llm.ProviderKit.Cli/Llm.ProviderKit.Cli.csproj" />
+    <Project Path="src/Llm.ProviderKit/Llm.ProviderKit.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Llm.ProviderKit.Tests/Llm.ProviderKit.Tests.csproj" />
+  </Folder>
+</Solution>
