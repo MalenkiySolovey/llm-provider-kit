@@ -8,7 +8,10 @@ public sealed record ProviderInspectionResult(
     IReadOnlyDictionary<string, CapabilityStatus> Capabilities,
     ProviderBillingFacts Billing,
     DateTimeOffset ObservedAt,
-    string? Error);
+    string? Error)
+{
+    public ProviderMetricSnapshot MetricSnapshot { get; init; } = new() { ObservedAt = ObservedAt };
+}
 
 /// <summary>Executes bounded declarative GET/HEAD probes without owning credentials or application state.</summary>
 public sealed class ProviderInspectionService : IDisposable
@@ -95,14 +98,24 @@ public sealed class ProviderInspectionService : IDisposable
         decimal? limit = null;
         decimal? remaining = null;
         string? currency = null;
+        var metricSnapshots = new List<ProviderMetricSnapshot>();
         foreach (var (name, recipe) in new[]
                  {
                      ("balance", descriptor.Capabilities.Balance),
                      ("usage", descriptor.Capabilities.Usage),
                  })
         {
-            if (recipe.Status != CapabilityStatus.Supported) continue;
+            if (recipe.Status != CapabilityStatus.Supported)
+            {
+                metricSnapshots.Add(_mapper.MapMetrics(descriptor, name, recipe,
+                    new Dictionary<string, ProbeHttpResponse>(), DateTimeOffset.UtcNow, activeBaseUrl: baseUrl));
+                continue;
+            }
+
             var execution = await ExecuteRecipeAsync(descriptor, baseUrl, recipe, name, SendOnceAsync, cancellationToken).ConfigureAwait(false);
+            var observedAt = DateTimeOffset.UtcNow;
+            var mappedMetrics = _mapper.MapMetrics(descriptor, name, recipe, execution.Responses, observedAt, execution.Error, baseUrl);
+            metricSnapshots.Add(mappedMetrics);
             if (!execution.Valid)
             {
                 capabilities[name] = CapabilityStatus.Unknown;
@@ -123,13 +136,14 @@ public sealed class ProviderInspectionService : IDisposable
             }
         }
 
-        if (!string.IsNullOrWhiteSpace(currency) && remaining is null && limit.HasValue && used.HasValue)
-            remaining = Math.Max(0m, limit.Value - used.Value);
-        balance ??= remaining;
         var hasSuccess = cache.Values.Any(response => response.Success);
+        var finishedAt = DateTimeOffset.UtcNow;
         return new ProviderInspectionResult(hasSuccess, models, capabilities,
-            new ProviderBillingFacts(balance, used, limit, remaining, currency), DateTimeOffset.UtcNow,
-            errors.FirstOrDefault());
+            new ProviderBillingFacts(balance, used, limit, remaining, currency), finishedAt,
+            errors.FirstOrDefault())
+        {
+            MetricSnapshot = MergeMetricSnapshots(metricSnapshots, finishedAt, errors.FirstOrDefault()),
+        };
     }
 
     /// <summary>Refreshes only the declared model list; this operation never invokes billing recipes.</summary>
@@ -223,6 +237,7 @@ public sealed class ProviderInspectionService : IDisposable
         decimal? remaining = null;
         string? currency = null;
         string? billingError = null;
+        var metricSnapshots = new List<ProviderMetricSnapshot>();
         var origin = new Uri(planned.Plan.TargetUri.GetLeftPart(UriPartial.Authority));
 
         foreach (var strategy in _genericBillingStrategies)
@@ -246,6 +261,10 @@ public sealed class ProviderInspectionService : IDisposable
 
             var execution = await ExecuteRecipeAsync(descriptor, rawBaseUrl, recipe, "generic-billing", SendOnceAsync,
                 cancellationToken).ConfigureAwait(false);
+            var observedAt = DateTimeOffset.UtcNow;
+            var mappedMetrics = _mapper.MapMetrics(descriptor, "generic-billing", recipe, execution.Responses,
+                observedAt, execution.Error, rawBaseUrl);
+            metricSnapshots.Add(mappedMetrics);
             if (execution.Valid)
             {
                 var facts = _mapper.MapBilling(execution.Responses, outputMapping);
@@ -267,12 +286,13 @@ public sealed class ProviderInspectionService : IDisposable
                 execution.Error?.Contains("HTTP 403", StringComparison.OrdinalIgnoreCase) == true) break;
         }
 
-        if (!string.IsNullOrWhiteSpace(currency) && remaining is null && limit.HasValue && used.HasValue)
-            remaining = Math.Max(0m, limit.Value - used.Value);
-        balance ??= remaining;
+        var finishedAt = DateTimeOffset.UtcNow;
         return new ProviderInspectionResult(mapped.Success, mapped.ModelIds ?? [], capabilities,
-            new ProviderBillingFacts(balance, used, limit, remaining, currency), DateTimeOffset.UtcNow,
-            billingError ?? mapped.Error ?? modelResponse.Error);
+            new ProviderBillingFacts(balance, used, limit, remaining, currency), finishedAt,
+            billingError ?? mapped.Error ?? modelResponse.Error)
+        {
+            MetricSnapshot = MergeMetricSnapshots(metricSnapshots, finishedAt, billingError),
+        };
     }
 
     private async Task<RecipeExecution> ExecuteRecipeAsync(ProviderDescriptor descriptor, string baseUrl,
@@ -327,6 +347,51 @@ public sealed class ProviderInspectionService : IDisposable
     }
 
     private static ProviderInspectionResult Failure(string error) => new(false, [], new Dictionary<string, CapabilityStatus>(), new ProviderBillingFacts(), DateTimeOffset.UtcNow, error);
+
+    private static ProviderMetricSnapshot MergeMetricSnapshots(
+        IReadOnlyList<ProviderMetricSnapshot> snapshots,
+        DateTimeOffset observedAt,
+        string? diagnostic)
+    {
+        var metrics = snapshots.SelectMany(snapshot => snapshot.Metrics)
+            .GroupBy(metric => metric.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.OrderByDescending(metric => metric.ObservedAt).First())
+            .ToArray();
+        var availability = MergeAvailability(snapshots.Select(snapshot => snapshot.Availability),
+            metrics.Any(metric => metric.Value.HasValue && metric.Availability == ProviderMetricAvailability.Live));
+        return new ProviderMetricSnapshot
+        {
+            Metrics = metrics,
+            ObservedAt = observedAt,
+            Availability = availability,
+            BalanceAvailability = MergeAvailability(snapshots.Select(snapshot => snapshot.BalanceAvailability),
+                metrics.Any(metric => metric.Value.HasValue && metric.Availability == ProviderMetricAvailability.Live &&
+                    metric.Kind is ProviderMetricKind.AvailableBalance or ProviderMetricKind.AllocatedCredits or ProviderMetricKind.PurchasedCredits)),
+            UsageAvailability = MergeAvailability(snapshots.Select(snapshot => snapshot.UsageAvailability),
+                metrics.Any(metric => metric.Value.HasValue && metric.Availability == ProviderMetricAvailability.Live &&
+                    metric.Kind is ProviderMetricKind.Spending or ProviderMetricKind.QuotaLimit or
+                    ProviderMetricKind.QuotaRemaining or ProviderMetricKind.ProviderCredits or ProviderMetricKind.ProviderSpecificUsage or
+                    ProviderMetricKind.RequestCount or ProviderMetricKind.RequestAllowance or ProviderMetricKind.TokenCount or
+                    ProviderMetricKind.TokenAllowance)),
+            Diagnostic = diagnostic,
+        };
+    }
+
+    private static ProviderMetricAvailability MergeAvailability(IEnumerable<ProviderMetricAvailability> source, bool hasLiveMetrics)
+    {
+        var statuses = source.ToArray();
+        var hasFailure = statuses.Any(status => status is ProviderMetricAvailability.Unauthorized or
+            ProviderMetricAvailability.Unavailable or ProviderMetricAvailability.InvalidResponse);
+        if (hasLiveMetrics) return hasFailure || statuses.Contains(ProviderMetricAvailability.Partial)
+            ? ProviderMetricAvailability.Partial
+            : ProviderMetricAvailability.Live;
+        if (statuses.Contains(ProviderMetricAvailability.Unauthorized)) return ProviderMetricAvailability.Unauthorized;
+        if (statuses.Contains(ProviderMetricAvailability.Unavailable)) return ProviderMetricAvailability.Unavailable;
+        if (statuses.Contains(ProviderMetricAvailability.InvalidResponse)) return ProviderMetricAvailability.InvalidResponse;
+        if (statuses.Length > 0 && statuses.All(status => status == ProviderMetricAvailability.Unsupported))
+            return ProviderMetricAvailability.Unsupported;
+        return ProviderMetricAvailability.Unknown;
+    }
 
     public void Dispose()
     {

@@ -7,6 +7,10 @@ namespace Llm.ProviderKit.Inspection;
 /// <summary>RFC 6901 pointer navigation and bounded scalar/list extraction.</summary>
 public static class JsonPointerExtractor
 {
+    private const NumberStyles DecimalStyles = NumberStyles.AllowLeadingSign |
+        NumberStyles.AllowDecimalPoint | NumberStyles.AllowExponent |
+        NumberStyles.AllowLeadingWhite | NumberStyles.AllowTrailingWhite;
+
     public static bool TryResolvePointer(JsonElement root, string jsonPath, out JsonElement target)
     {
         target = default;
@@ -61,7 +65,7 @@ public static class JsonPointerExtractor
         if (string.IsNullOrWhiteSpace(mapping.JsonPath) || !TryResolvePointer(root, mapping.JsonPath, out var element)) return false;
         var valid = element.ValueKind == JsonValueKind.Number
             ? element.TryGetDecimal(out value)
-            : element.ValueKind == JsonValueKind.String && decimal.TryParse(element.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out value);
+            : element.ValueKind == JsonValueKind.String && decimal.TryParse(element.GetString(), DecimalStyles, CultureInfo.InvariantCulture, out value);
         if (!valid) return false;
 
         try

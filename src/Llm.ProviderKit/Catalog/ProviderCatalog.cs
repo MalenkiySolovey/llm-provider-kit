@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Llm.ProviderKit.Inspection;
 
 namespace Llm.ProviderKit.Catalog;
 
@@ -197,6 +198,44 @@ public sealed class JsonFieldMapping
 
     [JsonPropertyName("scaleFactor")]
     public decimal? ScaleFactor { get; set; }
+
+    /// <summary>Optional signed semantics for this value; absent metadata is never guessed from the JSON field name.</summary>
+    [JsonPropertyName("metric")]
+    public ProviderMetricDefinition? Metric { get; set; }
+}
+
+/// <summary>Signed meaning and time semantics for one mapped metric.</summary>
+public sealed class ProviderMetricDefinition
+{
+    [JsonPropertyName("kind")]
+    public ProviderMetricKind Kind { get; set; } = ProviderMetricKind.Unknown;
+
+    [JsonPropertyName("scope")]
+    public ProviderMetricScope Scope { get; set; } = ProviderMetricScope.Unknown;
+
+    [JsonPropertyName("unitKind")]
+    public ProviderMetricUnitKind UnitKind { get; set; } = ProviderMetricUnitKind.Unknown;
+
+    [JsonPropertyName("unitCode")]
+    public string? UnitCode { get; set; }
+
+    [JsonPropertyName("period")]
+    public string? Period { get; set; }
+
+    [JsonPropertyName("periodSemantics")]
+    public ProviderMetricPeriodSemantics PeriodSemantics { get; set; } = ProviderMetricPeriodSemantics.Unknown;
+
+    [JsonPropertyName("periodStartPointer")]
+    public string? PeriodStartPointer { get; set; }
+
+    [JsonPropertyName("periodEndPointer")]
+    public string? PeriodEndPointer { get; set; }
+
+    [JsonPropertyName("resetAtPointer")]
+    public string? ResetAtPointer { get; set; }
+
+    [JsonPropertyName("allowsNegative")]
+    public bool AllowsNegative { get; set; }
 }
 
 public sealed class CurrencyMapping

@@ -9,7 +9,8 @@
 - Parse and validate versioned provider catalogs while preserving unknown extension fields.
 - Match exact IDN hosts and exact base URLs; never use suffix or substring matching.
 - Plan only GET/HEAD requests, enforce HTTPS (except loopback test endpoints), exact trusted-host allowlists, and reject credential-bearing static headers.
-- Inspect models and declarative balance/usage facts over bounded responses with timeouts and trusted redirects.
+- Inspect models and declarative billing/usage facts over bounded responses with timeouts and trusted redirects.
+- Normalize typed balance, spending, credit, request, and token metrics while retaining scope, units, period semantics, provenance, and freshness.
 - Provide credentials through an operation-scoped `IProviderCredentialSource`; the transport never persists them or includes them in errors.
 - Merge exact model IDs without collapsing `:free` variants, preserve manual/disabled settings, and mark stale availability without deleting entries.
 - Keep unknown context limits and capabilities unknown; retain explicit evidence and consumer-owned model overrides.
