@@ -136,6 +136,34 @@ public sealed class ProviderCapabilityRecipe
 
     [JsonPropertyName("outputs")]
     public RecipeResponseMapping? Outputs { get; set; }
+
+    [JsonPropertyName("quotaDisplay")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public QuotaDisplayConversion? QuotaDisplay { get; set; }
+}
+
+/// <summary>Converts raw API-key quota into the provider's declared display denomination.</summary>
+public sealed record QuotaDisplayConversion
+{
+    [JsonPropertyName("currency")]
+    public string Currency { get; init; } = string.Empty;
+
+    [JsonPropertyName("symbol")]
+    public string Symbol { get; init; } = string.Empty;
+
+    [JsonPropertyName("rawUnitsPerBaseUnit")]
+    public long RawUnitsPerBaseUnit { get; init; }
+
+    [JsonPropertyName("multiplier")]
+    public decimal Multiplier { get; init; } = 1m;
+
+    internal bool IsValid => RawUnitsPerBaseUnit > 0 && Multiplier > 0m && IsValidDenomination(Currency, Symbol);
+
+    internal static bool IsValidDenomination(string? currency, string? symbol) =>
+        currency is { Length: 3 } && currency.All(char.IsAsciiLetterUpper) &&
+        symbol is { Length: > 0 and <= 8 } &&
+        !symbol.Any(character => char.IsControl(character) || char.IsWhiteSpace(character) ||
+            char.GetUnicodeCategory(character) == System.Globalization.UnicodeCategory.Format);
 }
 
 public sealed class RecipeRequest

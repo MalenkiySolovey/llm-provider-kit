@@ -41,6 +41,8 @@ var exactIds = inventory.GetDeterministicSnapshot().Select(model => model.Id);
 
 A trusted descriptor can opt into `new-api-token-usage` with an optional `keyUsage` recipe alongside its existing usage recipe. Set one bearer-authenticated GET request with a root-relative `path` or an exact HTTPS `url`. The planner checks that the target shares the active origin and is trusted. The transport rejects redirects for this strategy.
 
+When `keyUsage.quotaDisplay` is present, ProviderKit calculates `raw quota / rawUnitsPerBaseUnit × multiplier` and returns the converted amount, currency code, and symbol in `ProviderMetric.Display`. `Value` and `Unit` retain the source quota. The optional multiplier defaults to 1. An unlimited key has no finite display limit or remainder.
+
 The snapshot reports finite grant, remaining quota and usage in raw `quota-units` scoped to the API key. An unlimited key has a live `QuotaLimit` metric with `IsUnlimited = true` and a null value. Key expiry, when supplied, appears in `ExpiresAt`. Read account balance from a separate, explicitly mapped account observation. [New API token usage](https://docs.newapi.pro/en/docs/api/management/token-management/usage-token-get)
 
 ## JSON command

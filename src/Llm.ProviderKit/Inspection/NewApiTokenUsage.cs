@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Llm.ProviderKit.Catalog;
 
 namespace Llm.ProviderKit.Inspection;
 
@@ -35,7 +36,8 @@ internal sealed record NewApiTokenUsage(decimal? Limit, decimal Used, decimal? R
         return new(limit, used, remaining, expiresAt);
     }
 
-    public IReadOnlyList<ProviderMetric> ToMetrics(string providerId, DateTimeOffset observedAt)
+    public IReadOnlyList<ProviderMetric> ToMetrics(string providerId, DateTimeOffset observedAt,
+        QuotaDisplayConversion? conversion)
     {
         var allowance = Metric("api-key-quota-limit", ProviderMetricKind.QuotaLimit, Limit) with { IsUnlimited = Limit is null };
         var used = Metric("api-key-quota-used", ProviderMetricKind.ProviderSpecificUsage, Used);
@@ -48,6 +50,7 @@ internal sealed record NewApiTokenUsage(decimal? Limit, decimal Used, decimal? R
             Id = id,
             Kind = kind,
             Value = value,
+            Display = ToDisplay(value, conversion),
             Scope = ProviderMetricScope.ApiKey,
             Unit = QuotaUnit,
             Availability = ProviderMetricAvailability.Live,
@@ -56,6 +59,20 @@ internal sealed record NewApiTokenUsage(decimal? Limit, decimal Used, decimal? R
             ExpiresAt = ExpiresAt,
             Source = providerId,
         };
+    }
+
+    private static ProviderMetricDisplay? ToDisplay(decimal? value, QuotaDisplayConversion? conversion)
+    {
+        if (value is not { } raw || conversion is not { IsValid: true }) return null;
+        try
+        {
+            var displayAmount = raw / conversion.RawUnitsPerBaseUnit * conversion.Multiplier;
+            return new ProviderMetricDisplay(displayAmount, conversion.Currency, conversion.Symbol);
+        }
+        catch (OverflowException)
+        {
+            return null;
+        }
     }
 
     private static bool IsSuccess(JsonElement root)

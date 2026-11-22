@@ -107,6 +107,22 @@ public static class ProviderCatalogValidator
             }
         }
 
+        if (provider.Capabilities is { } capabilities)
+        {
+            if (capabilities.Models?.QuotaDisplay is not null || capabilities.Balance?.QuotaDisplay is not null ||
+                capabilities.Usage?.QuotaDisplay is not null)
+            {
+                return $"Provider '{provider.Id}' can only declare quotaDisplay on keyUsage.";
+            }
+
+            if (capabilities.KeyUsage is { QuotaDisplay: { } conversion } keyUsage &&
+                (!conversion.IsValid || keyUsage.Status != CapabilityStatus.Supported ||
+                    !Inspection.NewApiTokenUsage.IsStrategy(keyUsage.Strategy)))
+            {
+                return $"Provider '{provider.Id}' has an invalid API-key quota display conversion.";
+            }
+        }
+
         return null;
     }
 }

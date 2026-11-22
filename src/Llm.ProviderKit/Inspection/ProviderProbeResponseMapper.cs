@@ -78,7 +78,7 @@ public sealed class ProviderProbeResponseMapper : IProviderProbeResponseMapper
             {
                 return CapabilitySnapshot(capability, ProviderMetricAvailability.Live, observedAt, diagnostic) with
                 {
-                    Metrics = usage.ToMetrics(descriptor.Id, observedAt),
+                    Metrics = usage.ToMetrics(descriptor.Id, observedAt, recipe.QuotaDisplay),
                 };
             }
 

@@ -453,6 +453,7 @@ public sealed class ProviderMetricTests
         Assert.Equal(2_500_000m, quota.Value);
         Assert.Equal(2_500_000m, Assert.Single(keyMetrics, metric => metric.Kind == ProviderMetricKind.QuotaRemaining).Value);
         Assert.All(keyMetrics, metric => Assert.Equal(ProviderMetricUnit.Provider("quota-units"), metric.Unit));
+        Assert.All(keyMetrics, metric => Assert.Null(metric.Display));
         Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1795314482), quota.ExpiresAt);
         Assert.Null(quota.ResetAt);
         var account = Assert.Single(result.MetricSnapshot.Metrics, metric => metric.Scope == ProviderMetricScope.Account);
@@ -480,13 +481,20 @@ public sealed class ProviderMetricTests
         provider.Capabilities.KeyUsage = TokenUsageRecipe("/api/usage/token");
         provider.Capabilities.KeyUsage.Request!.Path = null;
         provider.Capabilities.KeyUsage.Request.Url = "https://api.test.test/api/usage/token";
+        provider.Capabilities.KeyUsage.QuotaDisplay = new QuotaDisplayConversion
+        {
+            Currency = "USD",
+            Symbol = "$",
+            RawUnitsPerBaseUnit = 10,
+        };
 
         var primaryRoute = await inspector.InspectAsync(provider, "endpoint", "https://api.test.test/v1");
         var otherRoute = await inspector.InspectAsync(provider, "endpoint", "https://other.test.test/v1");
 
         Assert.Equal(12m, primaryRoute.Billing.Used);
-        Assert.Equal(20m, Assert.Single(primaryRoute.MetricSnapshot.Metrics,
-            metric => metric.Kind == ProviderMetricKind.QuotaRemaining).Value);
+        var remaining = Assert.Single(primaryRoute.MetricSnapshot.Metrics, metric => metric.Kind == ProviderMetricKind.QuotaRemaining);
+        Assert.Equal(20m, remaining.Value);
+        Assert.Equal(new ProviderMetricDisplay(2m, "USD", "$"), remaining.Display);
         Assert.Equal(12m, otherRoute.Billing.Used);
         Assert.DoesNotContain(otherRoute.MetricSnapshot.Metrics, metric => metric.Scope == ProviderMetricScope.ApiKey);
         Assert.Equal(CapabilityStatus.Unknown, otherRoute.Capabilities["keyUsage"]);
@@ -509,20 +517,30 @@ public sealed class ProviderMetricTests
             new ProviderProbeResponseMapper(), new InMemoryProviderCredentialSource(
             [("new-api-test", "limited", "synthetic-limited"), ("new-api-test", "unlimited", "synthetic-unlimited")]));
         var provider = Descriptor("new-api-test", "api.test.test");
-        provider.Capabilities.Usage = TokenUsageRecipe("/api/usage/token");
+        provider.Capabilities.KeyUsage = TokenUsageRecipe("/api/usage/token");
+        provider.Capabilities.KeyUsage.QuotaDisplay = new QuotaDisplayConversion
+        {
+            Currency = "CNY",
+            Symbol = "¥",
+            RawUnitsPerBaseUnit = 500_000,
+            Multiplier = 7m,
+        };
 
         var finite = await inspector.InspectAsync(provider, "limited", "https://api.test.test/v1");
         var unlimited = await inspector.InspectAsync(provider, "unlimited", "https://api.test.test/v1");
 
-        Assert.Equal(2_300_000m, Assert.Single(finite.MetricSnapshot.Metrics,
-            metric => metric.Kind == ProviderMetricKind.QuotaRemaining).Value);
+        var remaining = Assert.Single(finite.MetricSnapshot.Metrics, metric => metric.Kind == ProviderMetricKind.QuotaRemaining);
+        Assert.Equal(2_300_000m, remaining.Value);
+        Assert.Equal(new ProviderMetricDisplay(32.2m, "CNY", "¥"), remaining.Display);
         var quota = Assert.Single(unlimited.MetricSnapshot.Metrics, metric => metric.Kind == ProviderMetricKind.QuotaLimit);
         Assert.True(quota.IsUnlimited);
         Assert.Null(quota.Value);
+        Assert.Null(quota.Display);
         Assert.Null(quota.ExpiresAt);
         Assert.DoesNotContain(unlimited.MetricSnapshot.Metrics, metric => metric.Kind == ProviderMetricKind.QuotaRemaining);
-        Assert.Equal(37m, Assert.Single(unlimited.MetricSnapshot.Metrics,
-            metric => metric.Kind == ProviderMetricKind.ProviderSpecificUsage).Value);
+        var used = Assert.Single(unlimited.MetricSnapshot.Metrics, metric => metric.Kind == ProviderMetricKind.ProviderSpecificUsage);
+        Assert.Equal(37m, used.Value);
+        Assert.Equal(new ProviderMetricDisplay(0.000518m, "CNY", "¥"), used.Display);
         Assert.Equal(ProviderMetricAvailability.Live, unlimited.MetricSnapshot.UsageAvailability);
         Assert.Equal(ProviderMetricAvailability.Unknown, unlimited.MetricSnapshot.BalanceAvailability);
         Assert.Null(unlimited.Billing.Balance);

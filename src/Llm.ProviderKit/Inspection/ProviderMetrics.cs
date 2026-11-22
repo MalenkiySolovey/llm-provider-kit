@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Llm.ProviderKit.Catalog;
 
 namespace Llm.ProviderKit.Inspection;
 
@@ -107,12 +108,21 @@ public enum ProviderMetricAvailability
     InvalidResponse = 8,
 }
 
+/// <summary>A catalog-qualified display amount for this metric, with the same scope as its raw value.</summary>
+public sealed record ProviderMetricDisplay(decimal Value, string Currency, string Symbol)
+{
+    [JsonIgnore]
+    public bool IsValid => Value >= 0m && QuotaDisplayConversion.IsValidDenomination(Currency, Symbol);
+}
+
 /// <summary>A normalized, credential-free billing or usage observation.</summary>
 public sealed record ProviderMetric
 {
     public string Id { get; init; } = string.Empty;
     public ProviderMetricKind Kind { get; init; } = ProviderMetricKind.Unknown;
     public decimal? Value { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ProviderMetricDisplay? Display { get; init; }
     public ProviderMetricScope Scope { get; init; } = ProviderMetricScope.Unknown;
     public ProviderMetricUnit Unit { get; init; } = ProviderMetricUnit.Unknown;
     public ProviderMetricAvailability Availability { get; init; } = ProviderMetricAvailability.Unknown;
