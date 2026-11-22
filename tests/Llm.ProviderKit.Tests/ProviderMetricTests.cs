@@ -276,6 +276,35 @@ public sealed class ProviderMetricTests
         Assert.False(ProviderMetricNormalizer.TryDeriveRemaining(limit, usedDifferentScope, false, out _, out _));
     }
 
+    [Fact]
+    public void UnlimitedQuotaCannotBeDerivedIntoANumericRemainingValue()
+    {
+        var limit = new ProviderMetric
+        {
+            Id = "unlimited-key-quota",
+            Kind = ProviderMetricKind.QuotaLimit,
+            Scope = ProviderMetricScope.ApiKey,
+            Unit = ProviderMetricUnit.Provider("provider-quota-units"),
+            Availability = ProviderMetricAvailability.Live,
+            ObservedAt = ObservedAt,
+            IsUnlimited = true,
+        };
+        var used = new ProviderMetric
+        {
+            Id = "key-used",
+            Kind = ProviderMetricKind.ProviderSpecificUsage,
+            Value = 10m,
+            Scope = ProviderMetricScope.ApiKey,
+            Unit = limit.Unit,
+            Availability = ProviderMetricAvailability.Live,
+            ObservedAt = ObservedAt,
+        };
+
+        Assert.False(ProviderMetricNormalizer.TryDeriveRemaining(limit, used, relationshipDocumented: true,
+            out var remaining, out _));
+        Assert.Null(remaining);
+    }
+
     [Theory]
     [InlineData(401, ProviderMetricAvailability.Unauthorized)]
     [InlineData(403, ProviderMetricAvailability.Unauthorized)]
@@ -390,33 +419,126 @@ public sealed class ProviderMetricTests
     }
 
     [Fact]
-    public async Task HeJuRecipePreservesDisplayUnitTransformationWithoutCallingItCurrency()
+    public async Task NewApiRecipeReadsOnlyTheDeclaredSameOriginPathAndKeepsAccountMetricsSeparate()
     {
-        var handler = new JsonHandler(_ => (HttpStatusCode.OK, """{"total_usage":123456}"""));
+        var handler = new JsonHandler(request => request.RequestUri!.AbsolutePath == "/management/token-usage"
+            ? (HttpStatusCode.OK, """{"code":true,"data":{"total_granted":2500000,"total_used":0,"total_available":2500000,"unlimited_quota":false,"expires_at":1795314482}}""")
+            : (HttpStatusCode.OK, """{"wallet":"12.5"}"""));
         using var client = new HttpClient(handler);
         using var transport = new SafeProviderHttpTransport(client);
         using var inspector = new ProviderInspectionService(new ProviderProbePlanner(), transport,
-            new ProviderProbeResponseMapper(), new InMemoryProviderCredentialSource([("hejuapi", "endpoint", "synthetic-token")]));
-        var provider = Descriptor("hejuapi", "www.hejuapi.com", "https://www.hejuapi.com/v1");
-        provider.TrustedHosts.Add("hk.hejuapi.com");
-        provider.Capabilities.Usage = SupportedRecipe(new RecipeResponseMapping
+            new ProviderProbeResponseMapper(), new InMemoryProviderCredentialSource([("new-api-test", "endpoint", "synthetic-token")]));
+        var provider = Descriptor("new-api-test", "api.test.test");
+        provider.Capabilities.Usage = TokenUsageRecipe("/management/token-usage");
+        provider.Capabilities.Balance = SupportedRecipe(new RecipeResponseMapping
         {
-            Used = new JsonFieldMapping { JsonPath = "/total_usage", Transform = "centsToUnits" },
-        }, path: "/dashboard/billing/usage");
+            Balance = new JsonFieldMapping
+            {
+                JsonPath = "/wallet",
+                Metric = new ProviderMetricDefinition
+                {
+                    Kind = ProviderMetricKind.AvailableBalance,
+                    Scope = ProviderMetricScope.Account,
+                    UnitKind = ProviderMetricUnitKind.Currency,
+                    UnitCode = "USD",
+                },
+            },
+        }, path: "/wallet");
 
-        var result = await inspector.InspectAsync(provider, "endpoint", "https://www.hejuapi.com/v1");
+        var result = await inspector.InspectAsync(provider, "endpoint", "https://api.test.test/v1");
 
-        var metric = Assert.Single(result.MetricSnapshot.Metrics);
-        Assert.Equal(1234.56m, metric.Value);
-        Assert.Equal(ProviderMetricKind.ProviderSpecificUsage, metric.Kind);
-        Assert.Equal(ProviderMetricUnitKind.ProviderSpecific, metric.Unit.Kind);
-        Assert.Equal("heju-display-units", metric.Unit.Code);
-        Assert.Equal(ProviderMetricScope.Unknown, metric.Scope);
-        Assert.Equal(ProviderMetricAvailability.Unknown, result.MetricSnapshot.BalanceAvailability);
+        Assert.Contains(new Uri("https://api.test.test/management/token-usage"), handler.Requests);
+        var keyMetrics = result.MetricSnapshot.Metrics.Where(metric => metric.Scope == ProviderMetricScope.ApiKey).ToArray();
+        var quota = Assert.Single(keyMetrics, metric => metric.Kind == ProviderMetricKind.QuotaLimit);
+        Assert.Equal(2_500_000m, quota.Value);
+        Assert.Equal(2_500_000m, Assert.Single(keyMetrics, metric => metric.Kind == ProviderMetricKind.QuotaRemaining).Value);
+        Assert.All(keyMetrics, metric => Assert.Equal(ProviderMetricUnit.Provider("quota-units"), metric.Unit));
+        Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1795314482), quota.ExpiresAt);
+        Assert.Null(quota.ResetAt);
+        var account = Assert.Single(result.MetricSnapshot.Metrics, metric => metric.Scope == ProviderMetricScope.Account);
+        Assert.Equal(12.5m, account.Value);
+        Assert.Equal(ProviderMetricUnit.Currency("USD"), account.Unit);
         Assert.Equal(ProviderMetricAvailability.Live, result.MetricSnapshot.UsageAvailability);
-        Assert.Null(result.Billing.Currency);
-        Assert.Null(result.Billing.Balance);
+        Assert.Null(result.Billing.Limit);
     }
+
+    [Fact]
+    public async Task SameOriginKeysHaveIndependentFiniteAndUnlimitedUsage()
+    {
+        var handler = new JsonHandler(request => request.Headers.Authorization?.Parameter switch
+        {
+            "synthetic-limited" => (HttpStatusCode.OK, """{"code":true,"data":{"total_granted":2500000,"total_used":200000,"total_available":2300000,"unlimited_quota":false}}"""),
+            "synthetic-unlimited" => (HttpStatusCode.OK, """{"success":true,"data":{"total_granted":0,"total_used":37,"total_available":0,"unlimited_quota":true,"expires_at":0}}"""),
+            _ => (HttpStatusCode.Unauthorized, "{}"),
+        });
+        using var client = new HttpClient(handler);
+        using var transport = new SafeProviderHttpTransport(client);
+        using var inspector = new ProviderInspectionService(new ProviderProbePlanner(), transport,
+            new ProviderProbeResponseMapper(), new InMemoryProviderCredentialSource(
+            [("new-api-test", "limited", "synthetic-limited"), ("new-api-test", "unlimited", "synthetic-unlimited")]));
+        var provider = Descriptor("new-api-test", "api.test.test");
+        provider.Capabilities.Usage = TokenUsageRecipe("/api/usage/token");
+
+        var finite = await inspector.InspectAsync(provider, "limited", "https://api.test.test/v1");
+        var unlimited = await inspector.InspectAsync(provider, "unlimited", "https://api.test.test/v1");
+
+        Assert.Equal(2_300_000m, Assert.Single(finite.MetricSnapshot.Metrics,
+            metric => metric.Kind == ProviderMetricKind.QuotaRemaining).Value);
+        var quota = Assert.Single(unlimited.MetricSnapshot.Metrics, metric => metric.Kind == ProviderMetricKind.QuotaLimit);
+        Assert.True(quota.IsUnlimited);
+        Assert.Null(quota.Value);
+        Assert.Null(quota.ExpiresAt);
+        Assert.DoesNotContain(unlimited.MetricSnapshot.Metrics, metric => metric.Kind == ProviderMetricKind.QuotaRemaining);
+        Assert.Equal(37m, Assert.Single(unlimited.MetricSnapshot.Metrics,
+            metric => metric.Kind == ProviderMetricKind.ProviderSpecificUsage).Value);
+        Assert.Equal(ProviderMetricAvailability.Live, unlimited.MetricSnapshot.UsageAvailability);
+        Assert.Equal(ProviderMetricAvailability.Unknown, unlimited.MetricSnapshot.BalanceAvailability);
+        Assert.Null(unlimited.Billing.Balance);
+        Assert.Null(unlimited.Billing.Currency);
+        Assert.Equal(2, handler.Requests.Count);
+    }
+
+    [Theory]
+    [InlineData(200, """{"code":false,"data":{"unlimited_quota":true,"total_used":0}}""", ProviderMetricAvailability.InvalidResponse)]
+    [InlineData(200, """{"code":true,"data":{"unlimited_quota":false,"total_granted":5,"total_used":0,"total_available":3}}""", ProviderMetricAvailability.InvalidResponse)]
+    [InlineData(200, """{"success":true,"data":{"total_granted":0,"total_used":0,"total_available":0}}""", ProviderMetricAvailability.InvalidResponse)]
+    [InlineData(401, "{}", ProviderMetricAvailability.Unauthorized)]
+    [InlineData(429, "{}", ProviderMetricAvailability.Unavailable)]
+    public async Task NewApiRecipeDoesNotTurnErrorsIntoZero(int statusCode, string body, ProviderMetricAvailability expected)
+    {
+        using var client = new HttpClient(new JsonHandler(_ => ((HttpStatusCode)statusCode, body)));
+        using var inspector = new ProviderInspectionService(new ProviderProbePlanner(), new SafeProviderHttpTransport(client),
+            new ProviderProbeResponseMapper(), new InMemoryProviderCredentialSource([("new-api-test", "endpoint", "synthetic-token")]));
+        var provider = Descriptor("new-api-test", "api.test.test");
+        provider.Capabilities.Usage = TokenUsageRecipe("/api/usage/token");
+
+        var result = await inspector.InspectAsync(provider, "endpoint", "https://api.test.test/v1");
+
+        Assert.Empty(result.MetricSnapshot.Metrics);
+        Assert.Equal(expected, result.MetricSnapshot.UsageAvailability);
+        Assert.Equal(CapabilityStatus.Unknown, result.Capabilities["usage"]);
+    }
+
+    [Fact]
+    public void NewApiRecipeCannotSendAnApiKeyToAnotherTrustedOrigin()
+    {
+        var provider = Descriptor("new-api-test", "api.test.test");
+        provider.TrustedHosts.Add("other.test.test");
+        var recipe = TokenUsageRecipe("/api/usage/token");
+        recipe.Request!.Url = "https://other.test.test/api/usage/token";
+
+        var plan = new ProviderProbePlanner().Plan(provider, recipe, "https://api.test.test/v1", "usage");
+
+        Assert.Null(plan.Plan);
+    }
+
+    private static ProviderCapabilityRecipe TokenUsageRecipe(string path) => new()
+    {
+        Status = CapabilityStatus.Supported,
+        Strategy = "new-api-token-usage",
+        Request = new RecipeRequest { Method = "GET", Path = path, Auth = "bearer" },
+    };
+
 
     [Fact]
     public async Task DeepSeekCandidateFixtureDoesNotActivateCatalogBillingEndpoint()

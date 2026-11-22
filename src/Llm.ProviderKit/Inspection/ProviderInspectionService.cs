@@ -116,6 +116,17 @@ public sealed class ProviderInspectionService : IDisposable
             var observedAt = DateTimeOffset.UtcNow;
             var mappedMetrics = _mapper.MapMetrics(descriptor, name, recipe, execution.Responses, observedAt, execution.Error, baseUrl);
             metricSnapshots.Add(mappedMetrics);
+            if (NewApiTokenUsage.IsStrategy(recipe.Strategy))
+            {
+                if (mappedMetrics.UsageAvailability != ProviderMetricAvailability.Live)
+                {
+                    capabilities[name] = CapabilityStatus.Unknown;
+                    if (mappedMetrics.Diagnostic is not null) errors.Add(mappedMetrics.Diagnostic);
+                }
+
+                continue;
+            }
+
             if (!execution.Valid)
             {
                 capabilities[name] = CapabilityStatus.Unknown;
@@ -299,6 +310,8 @@ public sealed class ProviderInspectionService : IDisposable
         ProviderCapabilityRecipe recipe, string capability, Func<ProviderProbePlan, Task<ProbeHttpResponse>> send,
         CancellationToken cancellationToken)
     {
+        if (NewApiTokenUsage.IsStrategy(recipe.Strategy) && recipe.Requests is not null)
+            return RecipeExecution.Invalid("New API token usage requires one request.");
         if (recipe.Requests is { Count: 0 }) return RecipeExecution.Invalid("Inspection recipe declares an empty request list.");
         var requests = recipe.Requests is { Count: > 0 } ? recipe.Requests : recipe.Request is null ? [] : [recipe.Request];
         if (requests.Count == 0) return RecipeExecution.Invalid("Supported inspection recipe is missing a request.");

@@ -36,7 +36,23 @@ public sealed class ProviderProbePlanner : IProviderProbePlanner
         var config = recipe.Request ?? new RecipeRequest { Method = "GET", Path = "/models" };
         var method = config.Method.Trim().ToUpperInvariant();
         if (method is not ("GET" or "HEAD")) return Invalid($"Method '{method}' is not allowed. Only GET and HEAD are permitted.");
+        var auth = config.Auth.Trim().ToLowerInvariant();
         var targetText = !string.IsNullOrWhiteSpace(config.Url) ? config.Url : JoinBaseUrlAndPath(baseUrl, config.Path, recipe.Strategy);
+        if (NewApiTokenUsage.IsStrategy(recipe.Strategy))
+        {
+            if (capability != "usage" || method != "GET" || auth != "bearer" ||
+                recipe.Request is null || !string.IsNullOrWhiteSpace(config.Url) ||
+                config.Path?.Trim() is not { Length: > 1 } path || path[0] != '/' ||
+                path[1] == '/' || path.Contains('\\') ||
+                !Uri.TryCreate(baseUrl, UriKind.Absolute, out var origin) || origin.Scheme != Uri.UriSchemeHttps ||
+                !string.IsNullOrEmpty(origin.UserInfo) || !string.IsNullOrEmpty(origin.Query) || !string.IsNullOrEmpty(origin.Fragment))
+            {
+                return Invalid("New API token usage requires a bearer GET to a root-relative path on the active HTTPS origin.");
+            }
+
+            targetText = origin.GetLeftPart(UriPartial.Authority) + path;
+        }
+
         if (!Uri.TryCreate(targetText, UriKind.Absolute, out var target)) return Invalid("Invalid target probe URL.");
         if (!string.IsNullOrEmpty(target.UserInfo) || !string.IsNullOrEmpty(target.Query) || !string.IsNullOrEmpty(target.Fragment))
             return Invalid("Probe URL must not contain credentials, query values, or a fragment.");
@@ -44,7 +60,6 @@ public sealed class ProviderProbePlanner : IProviderProbePlanner
             return Invalid("Insecure HTTP is allowed only for loopback test endpoints.");
         if (!ProviderMatcher.IsHostTrusted(descriptor, target)) return Invalid($"Target host '{target.IdnHost}' is not in the exact trustedHosts allowlist.");
 
-        var auth = config.Auth.Trim().ToLowerInvariant();
         if (auth is not ("none" or "bearer" or "x-api-key")) return Invalid("Unsupported credential scheme.");
         if (config.Headers?.Keys.Any(IsSensitiveHeader) == true) return Invalid("Static headers cannot supply credentials or override transport control headers.");
 

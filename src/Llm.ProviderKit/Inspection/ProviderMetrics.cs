@@ -122,6 +122,13 @@ public sealed record ProviderMetric
     public DateTimeOffset? PeriodStartAt { get; init; }
     public DateTimeOffset? PeriodEndAt { get; init; }
     public DateTimeOffset? ResetAt { get; init; }
+    /// <summary>Provider-stated expiry of a key, credit, or subscription metric.</summary>
+    public DateTimeOffset? ExpiresAt { get; init; }
+    /// <summary>
+    /// True only when the provider explicitly reports that this quota has no finite limit.
+    /// In that case <see cref="Value"/> must stay null; a sentinel zero is not a balance.
+    /// </summary>
+    public bool IsUnlimited { get; init; }
     public string? Source { get; init; }
     public bool AllowsNegative { get; init; }
 }
@@ -165,7 +172,7 @@ public static class ProviderMetricNormalizer
                 ProviderMetricKind.ProviderCredits or ProviderMetricKind.ProviderSpecificUsage or
                 ProviderMetricKind.RequestCount or ProviderMetricKind.TokenCount))
             return Fail("The metric kinds are not a documented limit and usage pair.", out error);
-        if (limit.Value is null || used.Value is null)
+        if (limit.IsUnlimited || limit.Value is null || used.Value is null)
             return Fail("Both limit and usage values are required.", out error);
         if (limit.Availability != ProviderMetricAvailability.Live || used.Availability != ProviderMetricAvailability.Live)
             return Fail("Only live observations can be used to derive remaining allowance.", out error);
@@ -194,6 +201,7 @@ public static class ProviderMetricNormalizer
                 PeriodStartAt = limit.PeriodStartAt,
                 PeriodEndAt = limit.PeriodEndAt,
                 ResetAt = limit.ResetAt,
+                ExpiresAt = limit.ExpiresAt,
                 Source = limit.Source,
             };
             return true;

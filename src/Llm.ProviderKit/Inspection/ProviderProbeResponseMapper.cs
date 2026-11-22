@@ -71,6 +71,21 @@ public sealed class ProviderProbeResponseMapper : IProviderProbeResponseMapper
             return CapabilitySnapshot(capability, availability, observedAt, diagnostic);
         }
 
+        if (NewApiTokenUsage.IsStrategy(recipe.Strategy))
+        {
+            if (responses.Count == 1 && responses.Values.Single() is { Success: true, Json: { } json } &&
+                NewApiTokenUsage.Read(json) is { } usage)
+            {
+                return CapabilitySnapshot(capability, ProviderMetricAvailability.Live, observedAt, diagnostic) with
+                {
+                    Metrics = usage.ToMetrics(descriptor.Id, observedAt),
+                };
+            }
+
+            var status = ClassifyFailure(responses, diagnostic, expectJson: true);
+            return CapabilitySnapshot(capability, status, observedAt, diagnostic ?? "The token-usage response was invalid.");
+        }
+
         var mapping = recipe.Outputs ?? recipe.Response;
         if (mapping is null)
         {
