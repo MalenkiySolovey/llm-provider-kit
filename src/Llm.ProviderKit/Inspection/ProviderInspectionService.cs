@@ -99,22 +99,29 @@ public sealed class ProviderInspectionService : IDisposable
         decimal? remaining = null;
         string? currency = null;
         var metricSnapshots = new List<ProviderMetricSnapshot>();
-        foreach (var (name, recipe) in new[]
-                 {
-                     ("balance", descriptor.Capabilities.Balance),
-                     ("usage", descriptor.Capabilities.Usage),
-                 })
+        var recipes = new List<(string Name, string Category, ProviderCapabilityRecipe Recipe)>
+        {
+            ("balance", "balance", descriptor.Capabilities.Balance),
+            ("usage", "usage", descriptor.Capabilities.Usage),
+        };
+        if (descriptor.Capabilities.KeyUsage is { } keyUsage)
+        {
+            recipes.Add(("keyUsage", "usage", keyUsage));
+            capabilities["keyUsage"] = keyUsage.Status;
+        }
+
+        foreach (var (name, category, recipe) in recipes)
         {
             if (recipe.Status != CapabilityStatus.Supported)
             {
-                metricSnapshots.Add(_mapper.MapMetrics(descriptor, name, recipe,
+                metricSnapshots.Add(_mapper.MapMetrics(descriptor, category, recipe,
                     new Dictionary<string, ProbeHttpResponse>(), DateTimeOffset.UtcNow, activeBaseUrl: baseUrl));
                 continue;
             }
 
-            var execution = await ExecuteRecipeAsync(descriptor, baseUrl, recipe, name, SendOnceAsync, cancellationToken).ConfigureAwait(false);
+            var execution = await ExecuteRecipeAsync(descriptor, baseUrl, recipe, category, SendOnceAsync, cancellationToken).ConfigureAwait(false);
             var observedAt = DateTimeOffset.UtcNow;
-            var mappedMetrics = _mapper.MapMetrics(descriptor, name, recipe, execution.Responses, observedAt, execution.Error, baseUrl);
+            var mappedMetrics = _mapper.MapMetrics(descriptor, category, recipe, execution.Responses, observedAt, execution.Error, baseUrl);
             metricSnapshots.Add(mappedMetrics);
             if (NewApiTokenUsage.IsStrategy(recipe.Strategy))
             {

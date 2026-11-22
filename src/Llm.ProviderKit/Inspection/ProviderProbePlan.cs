@@ -38,22 +38,34 @@ public sealed class ProviderProbePlanner : IProviderProbePlanner
         if (method is not ("GET" or "HEAD")) return Invalid($"Method '{method}' is not allowed. Only GET and HEAD are permitted.");
         var auth = config.Auth.Trim().ToLowerInvariant();
         var targetText = !string.IsNullOrWhiteSpace(config.Url) ? config.Url : JoinBaseUrlAndPath(baseUrl, config.Path, recipe.Strategy);
+        Uri? activeOrigin = null;
         if (NewApiTokenUsage.IsStrategy(recipe.Strategy))
         {
             if (capability != "usage" || method != "GET" || auth != "bearer" ||
-                recipe.Request is null || !string.IsNullOrWhiteSpace(config.Url) ||
-                config.Path?.Trim() is not { Length: > 1 } path || path[0] != '/' ||
-                path[1] == '/' || path.Contains('\\') ||
-                !Uri.TryCreate(baseUrl, UriKind.Absolute, out var origin) || origin.Scheme != Uri.UriSchemeHttps ||
-                !string.IsNullOrEmpty(origin.UserInfo) || !string.IsNullOrEmpty(origin.Query) || !string.IsNullOrEmpty(origin.Fragment))
+                recipe.Request is null ||
+                !Uri.TryCreate(baseUrl, UriKind.Absolute, out activeOrigin) || activeOrigin.Scheme != Uri.UriSchemeHttps ||
+                !string.IsNullOrEmpty(activeOrigin.UserInfo) || !string.IsNullOrEmpty(activeOrigin.Query) ||
+                !string.IsNullOrEmpty(activeOrigin.Fragment))
             {
-                return Invalid("New API token usage requires a bearer GET to a root-relative path on the active HTTPS origin.");
+                return Invalid("New API token usage requires a bearer GET on the active HTTPS origin.");
             }
 
-            targetText = origin.GetLeftPart(UriPartial.Authority) + path;
+            if (string.IsNullOrWhiteSpace(config.Url))
+            {
+                if (config.Path?.Trim() is not { Length: > 1 } path || path[0] != '/' || path[1] == '/' || path.Contains('\\'))
+                    return Invalid("New API token usage requires an exact URL or a root-relative path.");
+                targetText = activeOrigin.GetLeftPart(UriPartial.Authority) + path;
+            }
+            else if (!string.IsNullOrWhiteSpace(config.Path))
+            {
+                return Invalid("New API token usage must declare either a URL or a path.");
+            }
         }
 
         if (!Uri.TryCreate(targetText, UriKind.Absolute, out var target)) return Invalid("Invalid target probe URL.");
+        if (activeOrigin is not null && !string.Equals(target.GetLeftPart(UriPartial.Authority),
+                activeOrigin.GetLeftPart(UriPartial.Authority), StringComparison.OrdinalIgnoreCase))
+            return Invalid("The key-usage recipe is unavailable on the active provider origin.");
         if (!string.IsNullOrEmpty(target.UserInfo) || !string.IsNullOrEmpty(target.Query) || !string.IsNullOrEmpty(target.Fragment))
             return Invalid("Probe URL must not contain credentials, query values, or a fragment.");
         if (target.Scheme != Uri.UriSchemeHttps && !(target.Scheme == Uri.UriSchemeHttp && IsLoopback(target)))
@@ -72,7 +84,7 @@ public sealed class ProviderProbePlanner : IProviderProbePlanner
             capability,
             recipe.Response?.Models?.JsonPath ?? "/data",
             recipe.Response,
-            new ProviderTransportOptions());
+            activeOrigin is null ? new ProviderTransportOptions() : new ProviderTransportOptions(MaxRedirects: 0));
         return new ProviderProbePlanningResult(true, plan, null, null);
     }
 

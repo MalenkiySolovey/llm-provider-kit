@@ -3,7 +3,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $solution = Join-Path $repoRoot 'Llm.ProviderKit.slnx'
 $feed = Join-Path $repoRoot 'artifacts/packages'
 $consumer = Join-Path $repoRoot 'examples/Llm.ProviderKit.PackageConsumer/Llm.ProviderKit.PackageConsumer.csproj'
-$package = Join-Path $feed 'Llm.ProviderKit.0.1.0-preview.5.nupkg'
+$package = Join-Path $feed 'Llm.ProviderKit.0.1.0-preview.6.nupkg'
 
 Push-Location $repoRoot
 try {
@@ -40,7 +40,7 @@ try {
         if ($null -eq $nuspecEntry) { throw 'Package does not contain a nuspec.' }
         $reader = [IO.StreamReader]::new($nuspecEntry.Open())
         try { [xml]$nuspec = $reader.ReadToEnd() } finally { $reader.Dispose() }
-        if ($nuspec.package.metadata.id -ne 'Llm.ProviderKit' -or $nuspec.package.metadata.version -ne '0.1.0-preview.5') {
+        if ($nuspec.package.metadata.id -ne 'Llm.ProviderKit' -or $nuspec.package.metadata.version -ne '0.1.0-preview.6') {
             throw 'Package identity or version did not match the expected pin.'
         }
     }
@@ -48,7 +48,7 @@ try {
         $archive.Dispose()
     }
 
-    $globalPackageCache = Join-Path $env:USERPROFILE '.nuget/packages/llm.providerkit/0.1.0-preview.5'
+    $globalPackageCache = Join-Path $env:USERPROFILE '.nuget/packages/llm.providerkit/0.1.0-preview.6'
     if (Test-Path -LiteralPath $globalPackageCache) { Remove-Item -LiteralPath $globalPackageCache -Recurse -Force }
     dotnet restore $consumer --configfile 'eng/NuGet.PackageSmoke.config' --force-evaluate
     if ($LASTEXITCODE -ne 0) { throw 'Package-only consumer restore failed.' }

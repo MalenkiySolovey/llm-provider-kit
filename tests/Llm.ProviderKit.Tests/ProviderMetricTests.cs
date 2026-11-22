@@ -463,6 +463,38 @@ public sealed class ProviderMetricTests
     }
 
     [Fact]
+    public async Task OptionalKeyUsageKeepsTheExistingUsageRecipeAndDoesNotProbeAnotherRoute()
+    {
+        var handler = new JsonHandler(request => request.RequestUri!.AbsolutePath == "/api/usage/token"
+            ? (HttpStatusCode.OK, """{"code":true,"data":{"total_granted":30,"total_used":10,"total_available":20,"unlimited_quota":false}}""")
+            : (HttpStatusCode.OK, """{"consumption":12}"""));
+        using var client = new HttpClient(handler);
+        using var inspector = new ProviderInspectionService(new ProviderProbePlanner(), new SafeProviderHttpTransport(client),
+            new ProviderProbeResponseMapper(), new InMemoryProviderCredentialSource([("new-api-test", "endpoint", "synthetic-token")]));
+        var provider = Descriptor("new-api-test", "api.test.test");
+        provider.TrustedHosts.Add("other.test.test");
+        provider.Capabilities.Usage = SupportedRecipe(new RecipeResponseMapping
+        {
+            Used = new JsonFieldMapping { JsonPath = "/consumption" },
+        }, path: "/usage");
+        provider.Capabilities.KeyUsage = TokenUsageRecipe("/api/usage/token");
+        provider.Capabilities.KeyUsage.Request!.Path = null;
+        provider.Capabilities.KeyUsage.Request.Url = "https://api.test.test/api/usage/token";
+
+        var primaryRoute = await inspector.InspectAsync(provider, "endpoint", "https://api.test.test/v1");
+        var otherRoute = await inspector.InspectAsync(provider, "endpoint", "https://other.test.test/v1");
+
+        Assert.Equal(12m, primaryRoute.Billing.Used);
+        Assert.Equal(20m, Assert.Single(primaryRoute.MetricSnapshot.Metrics,
+            metric => metric.Kind == ProviderMetricKind.QuotaRemaining).Value);
+        Assert.Equal(12m, otherRoute.Billing.Used);
+        Assert.DoesNotContain(otherRoute.MetricSnapshot.Metrics, metric => metric.Scope == ProviderMetricScope.ApiKey);
+        Assert.Equal(CapabilityStatus.Unknown, otherRoute.Capabilities["keyUsage"]);
+        Assert.Single(handler.Requests, uri => uri.AbsolutePath == "/api/usage/token");
+        Assert.Contains(new Uri("https://other.test.test/v1/usage"), handler.Requests);
+    }
+
+    [Fact]
     public async Task SameOriginKeysHaveIndependentFiniteAndUnlimitedUsage()
     {
         var handler = new JsonHandler(request => request.Headers.Authorization?.Parameter switch

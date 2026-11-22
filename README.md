@@ -39,7 +39,7 @@ var exactIds = inventory.GetDeterministicSnapshot().Select(model => model.Id);
 
 ### New API token usage
 
-A trusted descriptor can opt into `new-api-token-usage` in its usage recipe. Set one bearer-authenticated GET request with a root-relative `path`. The planner targets the active HTTPS origin and checks the descriptor's trusted hosts. The recipe supplies the path, so each deployment can use its documented endpoint.
+A trusted descriptor can opt into `new-api-token-usage` with an optional `keyUsage` recipe alongside its existing usage recipe. Set one bearer-authenticated GET request with a root-relative `path` or an exact HTTPS `url`. The planner checks that the target shares the active origin and is trusted. The transport rejects redirects for this strategy.
 
 The snapshot reports finite grant, remaining quota and usage in raw `quota-units` scoped to the API key. An unlimited key has a live `QuotaLimit` metric with `IsUnlimited = true` and a null value. Key expiry, when supplied, appears in `ExpiresAt`. Read account balance from a separate, explicitly mapped account observation. [New API token usage](https://docs.newapi.pro/en/docs/api/management/token-management/usage-token-get)
 
